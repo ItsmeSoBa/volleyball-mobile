@@ -14,11 +14,17 @@ jobs:
         with:
           python-version: '3.10'
 
-      # Force Java 17 (for sdkmanager / Gradle)
+      # Use Java 17 for sdkmanager/Gradle
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+
+      - name: Verify repo layout
+        run: |
+          echo "Root files:"; ls -la
+          test -f buildozer.spec || { echo "::error::buildozer.spec missing at repo root"; exit 1; }
+          test -f main.py       || { echo "::error::main.py missing at repo root"; exit 1; }
 
       - name: System deps
         run: |
@@ -39,31 +45,29 @@ jobs:
           rm -f tools.zip
           mv cmdline-tools latest
 
-          # Use sdkmanager (Java 17 already on PATH)
+          # Use sdkmanager (Java 17 from setup-java)
           export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
           sdkmanager --version
 
           yes | sdkmanager --sdk_root="$SDK" \
             "platform-tools" "platforms;android-33" "build-tools;33.0.2" \
             "ndk;25.2.9519653" "cmdline-tools;latest"
-
           yes | sdkmanager --sdk_root="$SDK" --licenses
 
-          # ---- COMPAT WRAPPERS for older Buildozer/p4a checks ----
+          # Compat wrappers for older Buildozer/p4a checks
           mkdir -p "$SDK/tools/bin"
           cat > "$SDK/tools/bin/sdkmanager" <<'EOF'
           #!/usr/bin/env bash
           exec "$(dirname "$0")/../../cmdline-tools/latest/bin/sdkmanager" "$@"
           EOF
           chmod +x "$SDK/tools/bin/sdkmanager"
-
           cat > "$SDK/tools/bin/avdmanager" <<'EOF'
           #!/usr/bin/env bash
           exec "$(dirname "$0")/../../cmdline-tools/latest/bin/avdmanager" "$@"
           EOF
           chmod +x "$SDK/tools/bin/avdmanager"
 
-          # Persist env for later steps (and for Buildozer)
+          # Persist env for later steps
           {
             echo "ANDROID_SDK_ROOT=$SDK"
             echo "ANDROIDSDK=$SDK"
@@ -79,13 +83,6 @@ jobs:
             echo "$SDK/tools/bin"
           } >> $GITHUB_PATH
 
-      - name: Verify layout & tools
-        run: |
-          echo "sdkmanager: $(which sdkmanager || true)"
-          echo "aidl:       $(which aidl || true)"
-          ls -la "$ANDROIDSDK/tools/bin" || true
-          test -f buildozer.spec || (echo "::error::buildozer.spec missing at repo root" && exit 1)
-
       - name: Install Buildozer
         run: |
           python -m pip install --upgrade pip
@@ -95,15 +92,36 @@ jobs:
       - name: Build debug APK
         run: |
           set -eux
-          # ensure Java 17 for Gradle/p4a
+          # Ensure Java 17 for Gradle/p4a
           export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
           javac -version
-          buildozer android debug --verbose
+
+          # Show SDK paths Buildozer will read from spec
+          echo "ANDROIDSDK=$ANDROIDSDK"
+          echo "ANDROIDNDK=$ANDROIDNDK"
+
+          # Build
+          buildozer android debug --verbose || {
+            echo "------ BUILD FAILED: dumping logs ------"
+            find . -maxdepth 4 -type f -name "build.txt" -print -exec tail -n 400 {} \; || true
+            find . -maxdepth 6 -type f -name "*python-for-android*.log" -print -exec tail -n 400 {} \; || true
+            find . -maxdepth 6 -type f -name "*error*.log" -print -exec tail -n 400 {} \; || true
+            exit 1
+          }
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: volleyball-apk
           path: bin/*.apk
+
+      - name: Upload .buildozer workdir (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildozer-workdir
+          path: .buildozer/**
+          if-no-files-found: warn
