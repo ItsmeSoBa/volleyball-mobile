@@ -5,25 +5,69 @@ on:
 
 jobs:
   build:
+    # Jammy is stable for Buildozer/p4a
     runs-on: ubuntu-22.04
+
+    # Make SDK/NDK visible to Buildozer
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROIDSDK:        ${{ github.workspace }}/android-sdk
+      ANDROIDNDK:        ${{ github.workspace }}/android-sdk/ndk/25.2.9519653
+      JAVA_HOME:         /usr/lib/jvm/java-17-openjdk-amd64
+      PATH:              ${{ github.workspace }}/android-sdk/cmdline-tools/latest/bin:${{ github.workspace }}/android-sdk/platform-tools:${{ env.PATH }}
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
       - name: System deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git zip unzip openjdk-17-jdk \
-            libffi-dev libssl-dev zlib1g-dev liblzma-dev libncurses5 libncurses5-dev \
-            pkg-config
+          sudo apt-get install -y \
+            build-essential git zip unzip openjdk-17-jdk \
+            libffi-dev libssl-dev zlib1g-dev liblzma-dev \
+            libncurses6 libncurses-dev pkg-config wget curl
+
+      - name: Install Android SDK + NDK (cmdline tools, platform-tools, build-tools, NDK)
+        run: |
+          set -eux
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -L -o tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q tools.zip
+          rm -f tools.zip
+          mv cmdline-tools latest
+
+          # Install required SDK components
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653" "cmdline-tools;latest"
+
+          # Accept licenses
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses
+
+      - name: Verify layout & tools
+        run: |
+          echo "Repo root:"; ls -la
+          test -f buildozer.spec || (echo "::error::buildozer.spec missing at repo root" && exit 1)
+          echo "SDK contents:"; ls -la "$ANDROID_SDK_ROOT" || true
+          echo "NDK contents:"; ls -la "$ANDROIDNDK" || true
+          echo "Build-tools dir:"; ls -la "$ANDROID_SDK_ROOT/build-tools/33.0.2" || true
+          echo "aidl location:";  find "$ANDROID_SDK_ROOT/build-tools" -name aidl -maxdepth 2 || true
+
       - name: Install Buildozer
         run: |
           python -m pip install --upgrade pip
           pip install "cython<3.0" buildozer==1.5.0
+          buildozer --version
+
       - name: Build debug APK
         run: |
+          set -eux
           buildozer android debug --verbose
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
