@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # stable for Buildozer/p4a
+    runs-on: ubuntu-22.04   # jammy is stable for buildozer/p4a
 
     steps:
       - uses: actions/checkout@v4
@@ -14,13 +14,19 @@ jobs:
         with:
           python-version: '3.10'
 
+      # ✅ Force Java 17 on PATH for all following steps (fixes your log)
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: System deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential git zip unzip openjdk-17-jdk \
+            build-essential git zip unzip \
             libffi-dev libssl-dev zlib1g-dev liblzma-dev \
-            libncurses5 libncurses5-dev pkg-config wget curl
+            libncurses6 libncurses-dev pkg-config wget curl
 
       - name: Install Android SDK + NDK
         run: |
@@ -33,10 +39,9 @@ jobs:
           rm -f tools.zip
           mv cmdline-tools latest
 
-          # *** Use Java 17 for sdkmanager ***
-          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-          export PATH="$JAVA_HOME/bin:$SDK/cmdline-tools/latest/bin:$PATH"
-          java -version
+          # sdkmanager now uses Java 17 provided by setup-java
+          export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
+          sdkmanager --version
 
           yes | sdkmanager --sdk_root="$SDK" \
             "platform-tools" "platforms;android-33" "build-tools;33.0.2" \
@@ -44,7 +49,7 @@ jobs:
 
           yes | sdkmanager --sdk_root="$SDK" --licenses
 
-          # Persist env for later steps
+          # Persist for later steps
           echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
           echo "ANDROIDSDK=$SDK" >> $GITHUB_ENV
           echo "ANDROIDNDK=$SDK/ndk/25.2.9519653" >> $GITHUB_ENV
@@ -54,11 +59,14 @@ jobs:
 
       - name: Verify layout & tools
         run: |
+          echo "Repo root:"; ls -la
+          test -f buildozer.spec || (echo "::error::buildozer.spec missing at repo root" && exit 1)
           echo "sdkmanager:"; which sdkmanager || true
           echo "aidl:"; which aidl || true
+          echo "JAVA:"; java -version
+          echo "JAVAC:"; javac -version
           echo "ANDROIDSDK=$ANDROIDSDK"
           echo "ANDROIDNDK=$ANDROIDNDK"
-          test -f buildozer.spec || (echo "::error::buildozer.spec missing at repo root" && exit 1)
 
       - name: Install Buildozer
         run: |
@@ -69,7 +77,11 @@ jobs:
       - name: Build debug APK
         run: |
           set -eux
-          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          # ensure Java 17 is used by buildozer/p4a too
+          export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          javac -version
           buildozer android debug --verbose
 
       - name: Upload APK artifact
