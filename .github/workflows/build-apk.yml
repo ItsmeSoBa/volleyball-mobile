@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      # Force Java 17 globally (Gradle/p4a need it)
+      # Force Java 17 (for sdkmanager / Gradle)
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -39,7 +39,7 @@ jobs:
           rm -f tools.zip
           mv cmdline-tools latest
 
-          # Use sdkmanager with Java 17
+          # Use sdkmanager (Java 17 already on PATH)
           export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
           sdkmanager --version
 
@@ -49,19 +49,35 @@ jobs:
 
           yes | sdkmanager --sdk_root="$SDK" --licenses
 
-          # --- COMPAT SHIMS for older Buildozer/p4a expectations ---
-          # Buildozer still checks $SDK/tools/bin/{sdkmanager,avdmanager}. Create wrappers.
+          # ---- COMPAT WRAPPERS for older Buildozer/p4a checks ----
           mkdir -p "$SDK/tools/bin"
-          ln -sf "$SDK/cmdline-tools/latest/bin/sdkmanager" "$SDK/tools/bin/sdkmanager"
-          ln -sf "$SDK/cmdline-tools/latest/bin/avdmanager" "$SDK/tools/bin/avdmanager"
+          cat > "$SDK/tools/bin/sdkmanager" <<'EOF'
+          #!/usr/bin/env bash
+          exec "$(dirname "$0")/../../cmdline-tools/latest/bin/sdkmanager" "$@"
+          EOF
+          chmod +x "$SDK/tools/bin/sdkmanager"
 
-          # Persist for later steps
-          echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
-          echo "ANDROIDSDK=$SDK"       >> $GITHUB_ENV
-          echo "ANDROIDNDK=$SDK/ndk/25.2.9519653" >> $GITHUB_ENV
-          echo "$SDK/cmdline-tools/latest/bin"    >> $GITHUB_PATH
-          echo "$SDK/platform-tools"              >> $GITHUB_PATH
-          echo "$SDK/build-tools/33.0.2"         >> $GITHUB_PATH
+          cat > "$SDK/tools/bin/avdmanager" <<'EOF'
+          #!/usr/bin/env bash
+          exec "$(dirname "$0")/../../cmdline-tools/latest/bin/avdmanager" "$@"
+          EOF
+          chmod +x "$SDK/tools/bin/avdmanager"
+
+          # Persist env for later steps (and for Buildozer)
+          {
+            echo "ANDROID_SDK_ROOT=$SDK"
+            echo "ANDROIDSDK=$SDK"
+            echo "ANDROID_HOME=$SDK"
+            echo "ANDROID_SDK_HOME=$SDK"
+            echo "ANDROIDNDK=$SDK/ndk/25.2.9519653"
+          } >> $GITHUB_ENV
+
+          {
+            echo "$SDK/cmdline-tools/latest/bin"
+            echo "$SDK/platform-tools"
+            echo "$SDK/build-tools/33.0.2"
+            echo "$SDK/tools/bin"
+          } >> $GITHUB_PATH
 
       - name: Verify layout & tools
         run: |
@@ -79,7 +95,7 @@ jobs:
       - name: Build debug APK
         run: |
           set -eux
-          # Ensure Java 17 for Gradle too
+          # ensure Java 17 for Gradle/p4a
           export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
