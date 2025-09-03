@@ -33,8 +33,10 @@ jobs:
           rm -f tools.zip
           mv cmdline-tools latest
 
-          # add sdkmanager to PATH for this step
-          export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
+          # *** Use Java 17 for sdkmanager ***
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          export PATH="$JAVA_HOME/bin:$SDK/cmdline-tools/latest/bin:$PATH"
+          java -version
 
           yes | sdkmanager --sdk_root="$SDK" \
             "platform-tools" "platforms;android-33" "build-tools;33.0.2" \
@@ -42,23 +44,21 @@ jobs:
 
           yes | sdkmanager --sdk_root="$SDK" --licenses
 
-          # persist env vars for later steps
+          # Persist env for later steps
           echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
           echo "ANDROIDSDK=$SDK" >> $GITHUB_ENV
           echo "ANDROIDNDK=$SDK/ndk/25.2.9519653" >> $GITHUB_ENV
-          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
           echo "$SDK/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$SDK/platform-tools" >> $GITHUB_PATH
           echo "$SDK/build-tools/33.0.2" >> $GITHUB_PATH
 
       - name: Verify layout & tools
         run: |
-          echo "Repo root:"; ls -la
-          test -f buildozer.spec || (echo "::error::buildozer.spec missing at repo root" && exit 1)
           echo "sdkmanager:"; which sdkmanager || true
           echo "aidl:"; which aidl || true
           echo "ANDROIDSDK=$ANDROIDSDK"
           echo "ANDROIDNDK=$ANDROIDNDK"
+          test -f buildozer.spec || (echo "::error::buildozer.spec missing at repo root" && exit 1)
 
       - name: Install Buildozer
         run: |
@@ -69,7 +69,7 @@ jobs:
       - name: Build debug APK
         run: |
           set -eux
-          export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
           buildozer android debug --verbose
 
       - name: Upload APK artifact
