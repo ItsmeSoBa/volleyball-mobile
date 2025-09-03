@@ -8,7 +8,7 @@ source.dir = .
 source.include_exts = py,png
 icon.filename = icon.png
 
-requirements = python3, pygame
+requirements = python3, pygame==2.6.1
 orientation = landscape
 fullscreen = 1
 
