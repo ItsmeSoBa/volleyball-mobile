@@ -7,32 +7,55 @@ jobs:
   build:
     runs-on: ubuntu-22.04
 
+    # Make SDK/NDK paths explicit and nuke runner's conflicting NDK env
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROIDSDK:       ${{ github.workspace }}/android-sdk
+      ANDROID_HOME:     ${{ github.workspace }}/android-sdk
+      ANDROID_SDK_HOME: ${{ github.workspace }}/android-sdk
+      ANDROIDNDK:       ${{ github.workspace }}/android-sdk/ndk/25.2.9519653
+      ANDROID_NDK:      ""
+      ANDROID_NDK_HOME: ""
+      ANDROID_NDK_ROOT: ""
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Host Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'  # host Python (p4a builds its own)
+          python-version: '3.10'
 
-      # Force Java 17 for sdkmanager/Gradle
-      - uses: actions/setup-java@v4
+      - name: Java 17 (sdkmanager/Gradle)
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # Ensure repo has the expected files; add tiny placeholders if missing
-      - name: Ensure project files exist
+      # Optional but helpful: cache SDK and buildozer workdir across runs
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: android-sdk
+          key: android-sdk-a33-bt3302-ndk25b
+
+      - name: Cache Buildozer workdir
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-cache-v1
+
+      - name: Ensure project files exist (placeholders if missing)
         run: |
           set -eux
           ls -la
-          # Minimal main.py placeholder if absent (so build never dies early)
           if [ ! -f main.py ]; then
             cat > main.py <<'PY'
-import sys
-print("Placeholder main.py (no game found).")
+import sys, pygame; print("Placeholder main.py – add your game code here."); sys.exit(0)
 PY
           fi
-          # Minimal icon placeholder if absent
           if [ ! -f icon.png ]; then
             base64 -d > icon.png <<'B64'
 iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAklEQVR4AewaftIAAABcSURBVO3B
@@ -40,35 +63,37 @@ QREAAAgDINc/9E0sJQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 AAAAAAAAAAAAAAAAAAAAeBkNAQABnCNsvQAAAABJRU5ErkJggg==
 B64
           fi
-          # If buildozer.spec missing, write a sane default
-          if [ ! -f buildozer.spec ]; then
-            cat > buildozer.spec <<'SPEC'
-[app]
-title = Volleyball
-package.name = volleyball
-package.domain = org.yourname
-version = 0.27
-source.dir = .
-source.include_exts = py,png
-icon.filename = icon.png
-requirements = python3, pygame==2.6.1
-orientation = landscape
-fullscreen = 1
-p4a.bootstrap = sdl2
-android.api = 33
-android.minapi = 21
-android.ndk = 25b
-android.archs = arm64-v8a
-android.build_tools_version = 33.0.2
-android.accept_sdk_license = True
-android.sdk_path = ./android-sdk
-android.ndk_path = ./android-sdk/ndk/25.2.9519653
-android.permissions = INTERNET
-[buildozer]
-log_level = 2
-warn_on_root = 0
-SPEC
-          fi
+
+      - name: Normalize buildozer.spec (dedupe keys, enforce safe values)
+        run: |
+          python - <<'PY'
+import configparser, os, io
+p='buildozer.spec'
+cp=configparser.ConfigParser()
+cp.optionxform=str
+with open(p, 'r', encoding='utf-8') as f:
+    cp.read_file(f)
+# Ensure sections exist
+for s in ('app','buildozer'):
+    if s not in cp: cp[s]={}
+A=cp['app']
+# Enforce single, safe values (prevents duplicate-option errors)
+A['source.dir']='.'; A['source.include_exts']='py,png'
+A['icon.filename']='icon.png'
+A['p4a.bootstrap']='sdl2'
+A['android.api']='33'; A['android.minapi']='21'
+A['android.ndk']='25b'; A['android.archs']='arm64-v8a'
+A['android.build_tools_version']='33.0.2'
+A['android.accept_sdk_license']='True'
+A['android.sdk_path']='./android-sdk'
+A['android.ndk_path']='./android-sdk/ndk/25.2.9519653'
+# Keep existing requirements if present, else set primary line
+if 'requirements' not in A or not A['requirements'].strip():
+    A['requirements']='python3, pygame==2.6.1'
+with open(p,'w',encoding='utf-8') as f:
+    cp.write(f)
+print("Normalized", p)
+PY
 
       - name: System deps
         run: |
@@ -81,18 +106,21 @@ SPEC
       - name: Install Android SDK + NDK (with old-path shims)
         run: |
           set -eux
-          SDK="$GITHUB_WORKSPACE/android-sdk"
+          SDK="$ANDROID_SDK_ROOT"
           mkdir -p "$SDK/cmdline-tools"
-          cd "$SDK/cmdline-tools"
-          curl -L -o tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q tools.zip
-          rm -f tools.zip
-          mv cmdline-tools latest
+          if [ ! -d "$SDK/cmdline-tools/latest" ]; then
+            cd "$SDK/cmdline-tools"
+            curl -L -o tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q tools.zip
+            rm -f tools.zip
+            mv cmdline-tools latest
+          fi
 
+          # Use sdkmanager (Java 17 already configured)
           export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
           sdkmanager --version
 
-          # Robust installs (retry a few times in case of flaky network)
+          # Robust installs (retry for flaky networks)
           for i in 1 2 3; do
             yes | sdkmanager --sdk_root="$SDK" \
               "platform-tools" "platforms;android-33" "build-tools;33.0.2" \
@@ -100,28 +128,16 @@ SPEC
           done
           yes | sdkmanager --sdk_root="$SDK" --licenses || true
 
-          # Old Buildozer/p4a expect $SDK/tools/bin; provide wrappers
+          # Old Buildozer checks $SDK/tools/bin; provide wrappers
           mkdir -p "$SDK/tools/bin"
-          cat > "$SDK/tools/bin/sdkmanager" <<'EOF'
-          #!/usr/bin/env bash
-          exec "$(dirname "$0")/../../cmdline-tools/latest/bin/sdkmanager" "$@"
-          EOF
+          echo '#!/usr/bin/env bash
+          exec "$(dirname "$0")/../../cmdline-tools/latest/bin/sdkmanager" "$@"' > "$SDK/tools/bin/sdkmanager"
           chmod +x "$SDK/tools/bin/sdkmanager"
-          cat > "$SDK/tools/bin/avdmanager" <<'EOF'
-          #!/usr/bin/env bash
-          exec "$(dirname "$0")/../../cmdline-tools/latest/bin/avdmanager" "$@"
-          EOF
+          echo '#!/usr/bin/env bash
+          exec "$(dirname "$0")/../../cmdline-tools/latest/bin/avdmanager" "$@"' > "$SDK/tools/bin/avdmanager"
           chmod +x "$SDK/tools/bin/avdmanager"
 
-          # Persist env
-          {
-            echo "ANDROID_SDK_ROOT=$SDK"
-            echo "ANDROIDSDK=$SDK"
-            echo "ANDROID_HOME=$SDK"
-            echo "ANDROID_SDK_HOME=$SDK"
-            echo "ANDROIDNDK=$SDK/ndk/25.2.9519653"
-          } >> $GITHUB_ENV
-
+          # Put tools on PATH for later steps
           {
             echo "$SDK/cmdline-tools/latest/bin"
             echo "$SDK/platform-tools"
@@ -129,78 +145,76 @@ SPEC
             echo "$SDK/tools/bin"
           } >> $GITHUB_PATH
 
-      - name: Install Buildozer (pin stable)
+      - name: Verify tools
+        run: |
+          which sdkmanager || true
+          which aidl || true
+          java -version
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "ANDROIDNDK=$ANDROIDNDK"
+
+      - name: Install Buildozer (stable)
         run: |
           python -m pip install --upgrade pip
           pip install "cython<3.0" buildozer==1.5.0
           buildozer --version
 
-      - name: Build APK with smart fallbacks (logs captured)
+      - name: Build with smart fallbacks (full logs)
         run: |
           set -euxo pipefail
-
           export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
           export PATH="$JAVA_HOME/bin:$PATH"
-          java -version
-          javac -version
+          java -version; javac -version
 
-          echo "=== Using ANDROIDSDK=$ANDROIDSDK ==="
-          echo "=== Using ANDROIDNDK=$ANDROIDNDK ==="
-
-          edit_req() {
-            local REQ="$1"
-            echo ">> Setting requirements to: $REQ"
-            python - "$REQ" <<'PY'
-import sys, re, io
+          edit_req () {
+            python - "$1" <<'PY'
+import sys,re
 p='buildozer.spec'
-txt=open(p,encoding='utf-8').read()
-new=re.sub(r'(?mi)^(\s*requirements\s*=\s*).*$',
-           r'\1'+sys.argv[1], txt)
-open(p,'w',encoding='utf-8').write(new)
-print("requirements now set.")
+t=open(p,encoding='utf-8').read()
+t=re.sub(r'(?im)^(\\s*requirements\\s*=).+$', r'\\1 '+sys.argv[1], t)
+open(p,'w',encoding='utf-8').write(t)
+print("requirements ->", sys.argv[1])
 PY
           }
-
-          try_build() {
-            local LABEL="$1"
-            echo "::group::Build attempt: $LABEL"
-            ( buildozer android debug --verbose 2>&1 | tee buildozer_${LABEL}.log )
+          try_build () {
+            local label="$1"
+            echo "::group::Build attempt: $label"
+            ( buildozer android debug --verbose 2>&1 | tee "buildozer_${label}.log" )
             local code=${PIPESTATUS[0]}
             echo "::endgroup::"
             return $code
           }
 
-          # --- Attempt A: Python 3.11 + pygame 2.6.1 (fast path)
+          # Attempt A: Python 3.11 + pygame 2.6.1
           edit_req "python3, pygame==2.6.1"
           if try_build "py311_pygame261"; then
-            echo "Primary build succeeded."
-          else
-            echo "Primary build failed — checking for known issues…"
-            # If 'longintrepr.h' or similar Python 3.11 header issues, fall back to Py3.10 + pygame 2.5.2
-            if grep -i -E 'longintrepr\.h|undefined reference|fatal error' buildozer_py311_pygame261.log >/dev/null 2>&1; then
-              echo "Header/link errors detected — trying fallback toolchain."
-            fi
-
-            # --- Attempt B: Python 3.10 + pygame 2.5.2 (compat path)
-            edit_req "python3==3.10.12, pygame==2.5.2"
-            if try_build "py310_pygame252"; then
-              echo "Fallback build succeeded."
-            else
-              echo "Both attempts failed; surfacing log tails for diagnosis."
-              tail -n 400 buildozer_py311_pygame261.log || true
-              tail -n 400 buildozer_py310_pygame252.log || true
-              exit 1
-            fi
+            echo "OK: primary toolchain"; exit 0
           fi
 
-      - name: Upload APK artifact
+          # Detect known header/ABI errors (e.g., longintrepr.h on old pygame)
+          if grep -i -E 'longintrepr\\.h|undefined reference|fatal error' buildozer_py311_pygame261.log >/dev/null 2>&1; then
+            echo "Known compile error detected — switching toolchain."
+          fi
+
+          # Attempt B: Python 3.10 + pygame 2.5.2 (compat)
+          edit_req "python3==3.10.12, pygame==2.5.2"
+          if try_build "py310_pygame252"; then
+            echo "OK: fallback toolchain"; exit 0
+          fi
+
+          echo "Both attempts failed. Tail of logs follows:"
+          tail -n 300 buildozer_py311_pygame261.log || true
+          tail -n 300 buildozer_py310_pygame252.log || true
+          exit 1
+
+      - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: volleyball-apk
           path: bin/*.apk
 
-      - name: Upload logs & .buildozer (on failure)
+      - name: Upload logs & workdir (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
