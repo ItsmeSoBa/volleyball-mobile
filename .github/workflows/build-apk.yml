@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # jammy is stable for buildozer/p4a
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ✅ Force Java 17 on PATH for all following steps (fixes your log)
+      # Force Java 17 globally (Gradle/p4a need it)
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -39,7 +39,7 @@ jobs:
           rm -f tools.zip
           mv cmdline-tools latest
 
-          # sdkmanager now uses Java 17 provided by setup-java
+          # Use sdkmanager with Java 17
           export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
           sdkmanager --version
 
@@ -49,24 +49,26 @@ jobs:
 
           yes | sdkmanager --sdk_root="$SDK" --licenses
 
+          # --- COMPAT SHIMS for older Buildozer/p4a expectations ---
+          # Buildozer still checks $SDK/tools/bin/{sdkmanager,avdmanager}. Create wrappers.
+          mkdir -p "$SDK/tools/bin"
+          ln -sf "$SDK/cmdline-tools/latest/bin/sdkmanager" "$SDK/tools/bin/sdkmanager"
+          ln -sf "$SDK/cmdline-tools/latest/bin/avdmanager" "$SDK/tools/bin/avdmanager"
+
           # Persist for later steps
           echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
-          echo "ANDROIDSDK=$SDK" >> $GITHUB_ENV
+          echo "ANDROIDSDK=$SDK"       >> $GITHUB_ENV
           echo "ANDROIDNDK=$SDK/ndk/25.2.9519653" >> $GITHUB_ENV
-          echo "$SDK/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$SDK/platform-tools" >> $GITHUB_PATH
-          echo "$SDK/build-tools/33.0.2" >> $GITHUB_PATH
+          echo "$SDK/cmdline-tools/latest/bin"    >> $GITHUB_PATH
+          echo "$SDK/platform-tools"              >> $GITHUB_PATH
+          echo "$SDK/build-tools/33.0.2"         >> $GITHUB_PATH
 
       - name: Verify layout & tools
         run: |
-          echo "Repo root:"; ls -la
+          echo "sdkmanager: $(which sdkmanager || true)"
+          echo "aidl:       $(which aidl || true)"
+          ls -la "$ANDROIDSDK/tools/bin" || true
           test -f buildozer.spec || (echo "::error::buildozer.spec missing at repo root" && exit 1)
-          echo "sdkmanager:"; which sdkmanager || true
-          echo "aidl:"; which aidl || true
-          echo "JAVA:"; java -version
-          echo "JAVAC:"; javac -version
-          echo "ANDROIDSDK=$ANDROIDSDK"
-          echo "ANDROIDNDK=$ANDROIDNDK"
 
       - name: Install Buildozer
         run: |
@@ -77,7 +79,7 @@ jobs:
       - name: Build debug APK
         run: |
           set -eux
-          # ensure Java 17 is used by buildozer/p4a too
+          # Ensure Java 17 for Gradle too
           export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
